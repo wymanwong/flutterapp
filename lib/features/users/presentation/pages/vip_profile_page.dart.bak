@@ -1,0 +1,1446 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:restaurant_availability_system/main.dart';
+import '../../domain/models/vip_profile.dart';
+import '../../data/repositories/vip_profile_repository.dart';
+import '../../../restaurant/domain/models/restaurant.dart';
+import '../../../restaurant/data/services/recommendation_service.dart';
+import '../widgets/swipeable_restaurant_card.dart';
+import '../widgets/preference_selector.dart';
+import '../../../settings/data/localization/app_localizations.dart';
+import '../../../notifications/services/vacancy_notification_service.dart';
+import '../../../restaurant/data/repositories/restaurant_repository.dart';
+import 'dart:math';
+import '../../../restaurant/presentation/pages/restaurant_detail_page.dart';
+
+import '../../../auth/data/models/user.dart';
+import '../../../auth/data/repositories/auth_repository.dart';
+import '../../../reservations/data/repositories/reservation_repository.dart';
+import '../../../shared/constants/app_colors.dart';
+import '../../../shared/services/app_localizations.dart';
+import '../../data/models/vip_profile.dart';
+import '../../data/repositories/vip_profile_repository.dart';
+import '../../../notifications/services/vacancy_notification_service.dart';
+
+final vipProfileRepositoryProvider = Provider<VipProfileRepository>((ref) {
+  return VipProfileRepository(firestore: FirebaseFirestore.instance);
+});
+
+final firebaseFirestoreProvider = Provider((ref) => FirebaseFirestore.instance);
+
+class VipProfilePage extends ConsumerStatefulWidget {
+  final String userId;
+
+  const VipProfilePage({
+    Key? key,
+    this.userId = 'current_user',
+  }) : super(key: key);
+
+  @override
+  ConsumerState<VipProfilePage> createState() => _VipProfilePageState();
+}
+
+class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  bool _isLoading = true;
+  bool _isEditing = false;
+  VipProfile? _profile;
+  final Map<String, List<Restaurant>> _recommendations = {};
+  
+  // Form state
+  final _formKey = GlobalKey<FormState>();
+  final List<String> _selectedDietaryPreferences = [];
+  final List<String> _selectedCuisines = [];
+  final Map<String, dynamic> _specialOccasions = {};
+  final Map<String, dynamic> _seatingPreferences = {};
+  NotificationPreferences _notificationPreferences = NotificationPreferences();
+  bool _hasUnsavedChanges = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    _loadProfile();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<bool> _onWillPop() async {
+    if (_isEditing && _hasUnsavedChanges) {
+      final result = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Discard Changes?'),
+          content: const Text('You have unsaved changes. Are you sure you want to discard them?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('CANCEL'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('DISCARD'),
+            ),
+          ],
+        ),
+      );
+      return result ?? false;
+    }
+    return true;
+  }
+
+  void _navigateBack() {
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    } else {
+      // If we can't pop, go to the main dashboard or users page
+      Navigator.of(context).pushReplacementNamed('/users');
+    }
+  }
+
+  Future<void> _loadProfile() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      if (widget.userId.isEmpty) {
+        _createDefaultProfile();
+        return;
+      }
+
+      final repository = ref.read(vipProfileRepositoryProvider);
+      final profile = await repository.getProfileByUserId(widget.userId);
+      
+      if (profile == null) {
+        print('No profile found for user ID: ${widget.userId}, creating a default one');
+        _createDefaultProfile();
+        return;
+      }
+      
+      setState(() {
+        _profile = profile;
+        _selectedDietaryPreferences.clear();
+        _selectedDietaryPreferences.addAll(_profile!.dietaryPreferences);
+        _selectedCuisines.clear();
+        _selectedCuisines.addAll(_profile!.favoriteCuisines);
+        _notificationPreferences = _profile!.notificationPreferences;
+        _isLoading = false;
+      });
+      print('Loaded profile with notification preferences: ${_notificationPreferences.toJson()}');
+    } catch (e) {
+      print('Error loading profile: $e');
+      _createDefaultProfile();
+    }
+  }
+  
+  void _createDefaultProfile() {
+    setState(() {
+      _profile = VipProfile(
+        id: '',
+        userId: widget.userId,
+        isVip: false,
+        loyaltyPoints: 0,
+        dietaryPreferences: [],
+        favoriteCuisines: [],
+        favoriteRestaurants: [],
+        notificationsEnabled: true,
+        notificationPreferences: NotificationPreferences(),
+        lastVisit: DateTime.now(),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+      _selectedDietaryPreferences.clear();
+      _selectedCuisines.clear();
+      _notificationPreferences = _profile!.notificationPreferences;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _loadRecommendations() async {
+    if (_profile == null) return;
+
+    try {
+      final recommendationService = ref.read(recommendationServiceProvider);
+      final recommendations = await recommendationService.getPersonalizedRecommendations(_profile!);
+      setState(() {
+        // Clear and update each category
+        _recommendations.clear();
+        recommendations.forEach((key, value) {
+          _recommendations[key] = value;
+        });
+      });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading recommendations: $e')),
+      );
+    }
+  }
+
+  Future<void> _saveProfile() async {
+    try {
+      final repository = ref.read(vipProfileRepositoryProvider);
+      
+      if (_profile!.id.isEmpty) {
+        // Create new profile
+        final updatedProfile = _profile!.copyWith(
+          dietaryPreferences: _selectedDietaryPreferences,
+          favoriteCuisines: _selectedCuisines,
+          notificationPreferences: _notificationPreferences,
+        );
+        
+        print('Creating profile with notification preferences: ${_notificationPreferences.toJson()}');
+        await repository.createProfile(updatedProfile);
+      } else {
+        // Update existing profile
+        final updatedProfile = _profile!.copyWith(
+          dietaryPreferences: _selectedDietaryPreferences,
+          favoriteCuisines: _selectedCuisines,
+          notificationPreferences: _notificationPreferences,
+        );
+        
+        print('Updating profile with notification preferences: ${_notificationPreferences.toJson()}');
+        await repository.updateProfile(updatedProfile);
+      }
+
+      setState(() {
+        _isEditing = false;
+        _hasUnsavedChanges = false;
+        _profile = _profile!.copyWith(
+          dietaryPreferences: _selectedDietaryPreferences,
+          favoriteCuisines: _selectedCuisines,
+          notificationPreferences: _notificationPreferences,
+        );
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile saved successfully')),
+      );
+    } catch (e) {
+      print('Error saving profile: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error saving profile: $e')),
+      );
+    }
+  }
+
+  Future<void> _toggleFavoriteRestaurant(Restaurant restaurant) async {
+    if (_profile == null) return;
+
+    try {
+      final repository = ref.read(vipProfileRepositoryProvider);
+      final isFavorite = _profile!.favoriteRestaurants.contains(restaurant.id);
+      
+      if (isFavorite) {
+        await repository.removeFavoriteRestaurant(_profile!.id, restaurant.id);
+      } else {
+        await repository.addFavoriteRestaurant(_profile!.id, restaurant.id);
+      }
+
+      // Update local state
+      setState(() {
+        final updatedFavorites = List<String>.from(_profile!.favoriteRestaurants);
+        if (isFavorite) {
+          updatedFavorites.remove(restaurant.id);
+        } else {
+          updatedFavorites.add(restaurant.id);
+        }
+        
+        _profile = _profile!.copyWith(
+          favoriteRestaurants: updatedFavorites,
+        );
+      });
+      
+      // Reload recommendations
+      await _loadRecommendations();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error updating favorites: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final translations = AppLocalizations.of(context);
+
+    if (_isLoading) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Text(translations.translate('vip_profile')),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: _navigateBack,
+          ),
+        ),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return WillPopScope(
+      onWillPop: _onWillPop,
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () async {
+              if (await _onWillPop()) {
+                _navigateBack();
+              }
+            },
+          ),
+          title: Text(translations.translate('vip_profile')),
+          actions: [
+            if (!_isEditing)
+              IconButton(
+                icon: const Icon(Icons.edit),
+                onPressed: () {
+                  setState(() {
+                    _isEditing = true;
+                  });
+                },
+              )
+            else
+              TextButton(
+                onPressed: _saveProfile,
+                child: Text(translations.translate('save')),
+              ),
+          ],
+        ),
+        body: _profile == null
+            ? Center(child: Text(translations.translate('error_loading_profile')))
+            : _isEditing
+                ? _buildEditProfileForm()
+                : _buildProfileView(),
+      ),
+    );
+  }
+
+  Widget _buildProfileView() {
+    return Column(
+      children: [
+        _buildProfileHeader(),
+        _buildTabBar(),
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              _buildRecommendationsTab(),
+              _buildPreferencesTab(),
+              _buildFavoritesTab(),
+              _buildNotificationsTab(),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProfileHeader() {
+    final translations = AppLocalizations.of(context);
+
+    return Card(
+      margin: const EdgeInsets.all(8.0),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 40,
+              backgroundColor: Colors.blue.shade100,
+              child: Icon(
+                Icons.person, 
+                size: 40, 
+                color: _profile!.isVip ? Colors.amber : Colors.blue
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        '${translations.translate('status')}: ',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Chip(
+                        label: Text(_profile!.isVip ? 'VIP' : translations.translate('regular')),
+                        backgroundColor: _profile!.isVip ? Colors.amber : Colors.grey.shade300,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Text(
+                        '${translations.translate('loyalty_points')}: ',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Text('${_profile!.loyaltyPoints}'),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Text(
+                        '${translations.translate('last_visit')}: ',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Text('${_profile!.lastVisit.day}/${_profile!.lastVisit.month}/${_profile!.lastVisit.year}'),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTabBar() {
+    final translations = AppLocalizations.of(context);
+
+    return TabBar(
+      controller: _tabController,
+      tabs: [
+        Tab(text: translations.translate('for_you')),
+        Tab(text: translations.translate('preferences')),
+        Tab(text: translations.translate('favorites')),
+        Tab(text: translations.translate('notifications')),
+      ],
+    );
+  }
+
+  Widget _buildRecommendationsTab() {
+    final translations = AppLocalizations.of(context);
+
+    // If no recommendations, display a message
+    if (_recommendations.values.every((list) => list.isEmpty)) {
+      return Center(
+        child: Text(translations.translate('set_preferences')),
+      );
+    }
+
+    return ListView(
+      children: [
+        if (_recommendations['favorites']!.isNotEmpty) ...[
+          const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(
+              'Your Favorites',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+          SizedBox(
+            height: 200,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _recommendations['favorites']!.length,
+              itemBuilder: (context, index) {
+                final restaurant = _recommendations['favorites']![index];
+                return SwipeableRestaurantCard(
+                  restaurant: restaurant,
+                  isFavorite: true,
+                  onToggleFavorite: () => _toggleFavoriteRestaurant(restaurant),
+                );
+              },
+            ),
+          ),
+        ],
+        if (_recommendations['cuisineMatch']!.isNotEmpty) ...[
+          const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(
+              'Based on Your Cuisine Preferences',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+          SizedBox(
+            height: 200,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _recommendations['cuisineMatch']!.length,
+              itemBuilder: (context, index) {
+                final restaurant = _recommendations['cuisineMatch']![index];
+                return SwipeableRestaurantCard(
+                  restaurant: restaurant,
+                  isFavorite: _profile!.favoriteRestaurants.contains(restaurant.id),
+                  onToggleFavorite: () => _toggleFavoriteRestaurant(restaurant),
+                );
+              },
+            ),
+          ),
+        ],
+        if (_recommendations['highlyRated']!.isNotEmpty) ...[
+          const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(
+              'Highly Rated',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+          SizedBox(
+            height: 200,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _recommendations['highlyRated']!.length,
+              itemBuilder: (context, index) {
+                final restaurant = _recommendations['highlyRated']![index];
+                return SwipeableRestaurantCard(
+                  restaurant: restaurant,
+                  isFavorite: _profile!.favoriteRestaurants.contains(restaurant.id),
+                  onToggleFavorite: () => _toggleFavoriteRestaurant(restaurant),
+                );
+              },
+            ),
+          ),
+        ],
+        if (_recommendations['new']!.isNotEmpty) ...[
+          const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(
+              'New Places',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+          SizedBox(
+            height: 200,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _recommendations['new']!.length,
+              itemBuilder: (context, index) {
+                final restaurant = _recommendations['new']![index];
+                return SwipeableRestaurantCard(
+                  restaurant: restaurant,
+                  isFavorite: _profile!.favoriteRestaurants.contains(restaurant.id),
+                  onToggleFavorite: () => _toggleFavoriteRestaurant(restaurant),
+                );
+              },
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildPreferencesTab() {
+    final translations = AppLocalizations.of(context);
+
+    return ListView(
+      padding: const EdgeInsets.all(16.0),
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  translations.translate('dietary_preferences'),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8.0,
+                  children: _profile!.dietaryPreferences.map((preference) {
+                    return Chip(
+                      label: Text(preference),
+                      backgroundColor: Colors.blue.shade100,
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  translations.translate('favorite_cuisines'),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8.0,
+                  children: _profile!.favoriteCuisines.map((cuisine) {
+                    return Chip(
+                      label: Text(cuisine),
+                      backgroundColor: Colors.blue.shade200,
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  translations.translate('seating_preferences'),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8.0,
+                  children: _profile!.seatingPreferences.entries.map((entry) {
+                    return Chip(
+                      label: Text('${entry.key}: ${entry.value}'),
+                      backgroundColor: Colors.blue.shade100,
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFavoritesTab() {
+    final translations = AppLocalizations.of(context);
+    
+    return StreamBuilder<List<Restaurant>>(
+      stream: ref.read(RestaurantRepository.provider).getRestaurants(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
+        }
+        
+        final restaurants = snapshot.data ?? [];
+        
+        if (restaurants.isEmpty) {
+          return Center(child: Text(translations.translate('no_restaurants')));
+        }
+        
+        // Filter to show favorite restaurants first, then others
+        final favoriteRestaurants = restaurants.where(
+          (r) => _profile!.favoriteRestaurants.contains(r.id)
+        ).toList();
+        
+        final otherRestaurants = restaurants.where(
+          (r) => !_profile!.favoriteRestaurants.contains(r.id)
+        ).toList();
+
+        return ListView(
+          padding: const EdgeInsets.all(16.0),
+          children: [
+            if (favoriteRestaurants.isNotEmpty) ...[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8.0),
+                child: Text(
+                  'Your Favorites',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+              ...favoriteRestaurants.map((restaurant) => _buildRestaurantTile(restaurant, true)),
+              const Divider(thickness: 2, height: 32),
+            ],
+            
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8.0),
+              child: Text(
+                'Available Restaurants',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ...otherRestaurants.map((restaurant) => _buildRestaurantTile(restaurant, false)),
+          ],
+        );
+      },
+    );
+  }
+  
+  Widget _buildRestaurantTile(Restaurant restaurant, bool isFavorite) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12.0),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Restaurant image
+          if (restaurant.imageUrl != null && restaurant.imageUrl!.isNotEmpty)
+            Image.network(
+              restaurant.imageUrl!,
+              height: 150,
+              width: double.infinity,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => Container(
+                height: 150,
+                color: Colors.grey.shade300,
+                child: const Center(
+                  child: Icon(Icons.restaurant, size: 50),
+                ),
+              ),
+            )
+          else
+            Container(
+              height: 150,
+              color: Colors.grey.shade300,
+              child: const Center(
+                child: Icon(Icons.restaurant, size: 50),
+              ),
+            ),
+            
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Restaurant info
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        restaurant.name,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        restaurant.cuisine,
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        restaurant.address,
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                // Favorite toggle button
+                IconButton(
+                  icon: Icon(
+                    isFavorite ? Icons.favorite : Icons.favorite_border,
+                    color: isFavorite ? Colors.red : Colors.grey,
+                    size: 28,
+                  ),
+                  onPressed: () => _toggleFavoriteRestaurant(restaurant),
+                ),
+              ],
+            ),
+          ),
+          
+          // Restaurant actions
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12.0, 0, 12.0, 12.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.book_online),
+                  label: const Text('Reserve'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pushNamed('/reservations', arguments: restaurant.id);
+                  },
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.info_outline),
+                  label: const Text('Details'),
+                  onPressed: () {
+                    Navigator.of(context).pushNamed('/restaurant/detail', arguments: restaurant.id);
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNotificationsTab() {
+    final translations = AppLocalizations.of(context);
+    
+    return ListView(
+      padding: const EdgeInsets.all(16.0),
+      children: [
+        // Test vacancy notification button
+        ElevatedButton.icon(
+          icon: const Icon(Icons.notification_important),
+          label: Text(translations.translate('test_vacancy_notification')),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+          ),
+          onPressed: _testVacancyNotification,
+        ),
+        const SizedBox(height: 16),
+        SwitchListTile(
+          title: Text(translations.translate('enable_notifications')),
+          subtitle: Text(translations.translate('notification_alerts')),
+          value: _profile!.notificationsEnabled,
+          onChanged: _isEditing ? (value) async {
+            try {
+              final repository = ref.read(vipProfileRepositoryProvider);
+              
+              if (_profile!.id.isNotEmpty) {
+                await repository.toggleNotifications(_profile!.id, value);
+              }
+              
+              setState(() {
+                _profile = _profile!.copyWith(notificationsEnabled: value);
+                _hasUnsavedChanges = true;
+              });
+              
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('${translations.translate('notifications')} ${value ? translations.translate('on') : translations.translate('off')}')),
+              );
+            } catch (e) {
+              print('Error toggling notifications: $e');
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('${translations.translate('error_updating_notification')}: $e')),
+              );
+            }
+          } : null,
+        ),
+        const Divider(),
+        _isEditing 
+        ? SwitchListTile(
+            title: Text(translations.translate('low_occupancy_alerts')),
+            subtitle: Text(translations.translate('get_notified_availability')),
+            value: _notificationPreferences.lowOccupancyAlerts,
+            onChanged: _profile!.notificationsEnabled ? (value) async {
+              try {
+                setState(() {
+                  _notificationPreferences = _notificationPreferences.copyWith(
+                    lowOccupancyAlerts: value,
+                  );
+                  _hasUnsavedChanges = true;
+                });
+                
+                if (_profile!.id.isNotEmpty) {
+                  final repository = ref.read(vipProfileRepositoryProvider);
+                  await repository.updateNotificationPreferences(_profile!.id, _notificationPreferences);
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('${translations.translate('low_occupancy_alerts')} ${value ? translations.translate('on') : translations.translate('off')}')),
+                  );
+                }
+              } catch (e) {
+                print('Error updating low occupancy alerts: $e');
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('${translations.translate('error_updating_notification')}: $e')),
+                );
+              }
+            } : null,
+          )
+        : ListTile(
+            title: Text(translations.translate('low_occupancy_alerts')),
+            subtitle: Text(translations.translate('get_notified_availability')),
+            trailing: Chip(
+              label: Text(_profile!.notificationPreferences.lowOccupancyAlerts ? translations.translate('on') : translations.translate('off')),
+              backgroundColor: _profile!.notificationPreferences.lowOccupancyAlerts
+                  ? Colors.blue.shade100
+                  : Colors.grey.shade300,
+            ),
+          ),
+        _isEditing && _profile!.notificationsEnabled && _notificationPreferences.lowOccupancyAlerts
+        ? Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Text('Threshold: ${_notificationPreferences.lowOccupancyThreshold}%'),
+                    const Spacer(),
+                  ],
+                ),
+              ),
+              Slider(
+                value: _notificationPreferences.lowOccupancyThreshold.toDouble(),
+                min: 10,
+                max: 50,
+                divisions: 8,
+                label: '${_notificationPreferences.lowOccupancyThreshold}%',
+                onChanged: _profile!.notificationsEnabled && _notificationPreferences.lowOccupancyAlerts
+                    ? (value) async {
+                      try {
+                        setState(() {
+                          _notificationPreferences = _notificationPreferences.copyWith(
+                            lowOccupancyThreshold: value.toInt(),
+                          );
+                          _hasUnsavedChanges = true;
+                        });
+                        
+                        if (_profile!.id.isNotEmpty) {
+                          final repository = ref.read(vipProfileRepositoryProvider);
+                          await repository.updateNotificationPreferences(_profile!.id, _notificationPreferences);
+                        }
+                      } catch (e) {
+                        print('Error updating threshold: $e');
+                      }
+                    }
+                    : null,
+              ),
+            ],
+          )
+        : ListTile(
+            title: const Text('Low Occupancy Threshold'),
+            subtitle: Text('Alert when occupancy is below ${_profile!.notificationPreferences.lowOccupancyThreshold}%'),
+          ),
+        const Divider(),
+        _isEditing 
+        ? SwitchListTile(
+            title: Text(translations.translate('proximity_alerts')),
+            subtitle: Text(translations.translate('notifications_near_favorites')),
+            value: _notificationPreferences.proximityAlerts,
+            onChanged: _profile!.notificationsEnabled ? (value) async {
+              try {
+                setState(() {
+                  _notificationPreferences = _notificationPreferences.copyWith(
+                    proximityAlerts: value,
+                  );
+                  _hasUnsavedChanges = true;
+                });
+                
+                if (_profile!.id.isNotEmpty) {
+                  final repository = ref.read(vipProfileRepositoryProvider);
+                  await repository.updateNotificationPreferences(_profile!.id, _notificationPreferences);
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Proximity alerts ${value ? 'enabled' : 'disabled'}')),
+                  );
+                }
+              } catch (e) {
+                print('Error updating proximity alerts: $e');
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Error updating notification setting: $e')),
+                );
+              }
+            } : null,
+          )
+        : ListTile(
+            title: Text(translations.translate('proximity_alerts')),
+            subtitle: Text(translations.translate('notifications_near_favorites')),
+            trailing: Chip(
+              label: Text(_profile!.notificationPreferences.proximityAlerts ? translations.translate('on') : translations.translate('off')),
+              backgroundColor: _profile!.notificationPreferences.proximityAlerts
+                  ? Colors.blue.shade100
+                  : Colors.grey.shade300,
+            ),
+          ),
+        _isEditing && _profile!.notificationsEnabled && _notificationPreferences.proximityAlerts
+        ? Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Text('Radius: ${_notificationPreferences.proximityRadius} meters'),
+                    const Spacer(),
+                  ],
+                ),
+              ),
+              Slider(
+                value: _notificationPreferences.proximityRadius.toDouble(),
+                min: 100,
+                max: 1000,
+                divisions: 9,
+                label: '${_notificationPreferences.proximityRadius} meters',
+                onChanged: _profile!.notificationsEnabled && _notificationPreferences.proximityAlerts
+                    ? (value) async {
+                      try {
+                        setState(() {
+                          _notificationPreferences = _notificationPreferences.copyWith(
+                            proximityRadius: value.toInt(),
+                          );
+                          _hasUnsavedChanges = true;
+                        });
+                        
+                        if (_profile!.id.isNotEmpty) {
+                          final repository = ref.read(vipProfileRepositoryProvider);
+                          await repository.updateNotificationPreferences(_profile!.id, _notificationPreferences);
+                        }
+                      } catch (e) {
+                        print('Error updating proximity radius: $e');
+                      }
+                    }
+                    : null,
+              ),
+            ],
+          )
+        : ListTile(
+            title: const Text('Proximity Radius'),
+            subtitle: Text('${_profile!.notificationPreferences.proximityRadius} meters'),
+          ),
+        _isEditing
+        ? SwitchListTile(
+            title: Text(translations.translate('reservation_reminders')),
+            subtitle: Text(translations.translate('get_reminded_reservations')),
+            value: _notificationPreferences.reservationReminders,
+            onChanged: _profile!.notificationsEnabled ? (value) async {
+              try {
+                setState(() {
+                  _notificationPreferences = _notificationPreferences.copyWith(
+                    reservationReminders: value,
+                  );
+                  _hasUnsavedChanges = true;
+                });
+                
+                if (_profile!.id.isNotEmpty) {
+                  final repository = ref.read(vipProfileRepositoryProvider);
+                  await repository.updateNotificationPreferences(_profile!.id, _notificationPreferences);
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Reservation reminders ${value ? 'enabled' : 'disabled'}')),
+                  );
+                }
+              } catch (e) {
+                print('Error updating reservation reminders: $e');
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Error updating notification setting: $e')),
+                );
+              }
+            } : null,
+          )
+        : ListTile(
+            title: Text(translations.translate('reservation_reminders')),
+            subtitle: Text(translations.translate('get_reminded_reservations')),
+            trailing: Chip(
+              label: Text(_profile!.notificationPreferences.reservationReminders ? translations.translate('on') : translations.translate('off')),
+              backgroundColor: _profile!.notificationPreferences.reservationReminders
+                  ? Colors.blue.shade100
+                  : Colors.grey.shade300,
+            ),
+          ),
+        if (_isEditing) ...[
+          const SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: _saveProfile,
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('SAVE NOTIFICATION SETTINGS'),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildEditProfileForm() {
+    final translations = AppLocalizations.of(context);
+
+    return Form(
+      key: _formKey,
+      child: ListView(
+        padding: const EdgeInsets.all(16.0),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    translations.translate('dietary_preferences'),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  PreferenceSelector(
+                    options: const [
+                      'Vegetarian',
+                      'Vegan',
+                      'Gluten-Free',
+                      'Dairy-Free',
+                      'Nut-Free',
+                      'Halal',
+                      'Kosher',
+                      'Pescatarian',
+                      'Keto',
+                      'Paleo',
+                    ],
+                    selectedValues: _selectedDietaryPreferences,
+                    onChanged: (values) {
+                      setState(() {
+                        _selectedDietaryPreferences.clear();
+                        _selectedDietaryPreferences.addAll(values);
+                        _hasUnsavedChanges = true;
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    translations.translate('favorite_cuisines'),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  PreferenceSelector(
+                    options: const [
+                      'Italian',
+                      'Chinese',
+                      'Japanese',
+                      'Mexican',
+                      'Indian',
+                      'Thai',
+                      'French',
+                      'Mediterranean',
+                      'American',
+                      'Fusion',
+                    ],
+                    selectedValues: _selectedCuisines,
+                    onChanged: (values) {
+                      setState(() {
+                        _selectedCuisines.clear();
+                        _selectedCuisines.addAll(values);
+                        _hasUnsavedChanges = true;
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    translations.translate('seating_preferences'),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: _seatingPreferences['location'] as String? ?? 'Inside',
+                    items: const [
+                      DropdownMenuItem(value: 'Inside', child: Text('Inside')),
+                      DropdownMenuItem(value: 'Outside', child: Text('Outside')),
+                      DropdownMenuItem(value: 'Bar', child: Text('Bar')),
+                      DropdownMenuItem(value: 'Private Room', child: Text('Private Room')),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() {
+                          _seatingPreferences['location'] = value;
+                          _hasUnsavedChanges = true;
+                        });
+                      }
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'Preferred Location',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: _seatingPreferences['noise'] as String? ?? 'Moderate',
+                    items: const [
+                      DropdownMenuItem(value: 'Quiet', child: Text('Quiet')),
+                      DropdownMenuItem(value: 'Moderate', child: Text('Moderate')),
+                      DropdownMenuItem(value: 'Lively', child: Text('Lively')),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() {
+                          _seatingPreferences['noise'] = value;
+                          _hasUnsavedChanges = true;
+                        });
+                      }
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'Preferred Noise Level',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    translations.translate('notification_preferences'),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  SwitchListTile(
+                    title: const Text('Enable Notifications'),
+                    value: _profile!.notificationsEnabled,
+                    onChanged: (value) {
+                      setState(() {
+                        _profile = _profile!.copyWith(notificationsEnabled: value);
+                      });
+                    },
+                  ),
+                  const Divider(),
+                  SwitchListTile(
+                    title: Text(translations.translate('low_occupancy_alerts')),
+                    subtitle: Text(translations.translate('get_notified_availability')),
+                    value: _notificationPreferences.lowOccupancyAlerts,
+                    onChanged: _profile!.notificationsEnabled
+                        ? (value) {
+                            setState(() {
+                              _notificationPreferences = _notificationPreferences.copyWith(
+                                lowOccupancyAlerts: value,
+                              );
+                              _hasUnsavedChanges = true;
+                            });
+                          }
+                        : null,
+                  ),
+                  Slider(
+                    value: _notificationPreferences.lowOccupancyThreshold.toDouble(),
+                    min: 10,
+                    max: 50,
+                    divisions: 8,
+                    label: '${_notificationPreferences.lowOccupancyThreshold}%',
+                    onChanged: _profile!.notificationsEnabled && _notificationPreferences.lowOccupancyAlerts
+                        ? (value) {
+                            setState(() {
+                              _notificationPreferences = _notificationPreferences.copyWith(
+                                lowOccupancyThreshold: value.toInt(),
+                              );
+                              _hasUnsavedChanges = true;
+                            });
+                          }
+                        : null,
+                  ),
+                  const Divider(),
+                  SwitchListTile(
+                    title: Text(translations.translate('proximity_alerts')),
+                    subtitle: Text(translations.translate('notifications_near_favorites')),
+                    value: _notificationPreferences.proximityAlerts,
+                    onChanged: _profile!.notificationsEnabled
+                        ? (value) {
+                            setState(() {
+                              _notificationPreferences = _notificationPreferences.copyWith(
+                                proximityAlerts: value,
+                              );
+                              _hasUnsavedChanges = true;
+                            });
+                          }
+                        : null,
+                  ),
+                  Slider(
+                    value: _notificationPreferences.proximityRadius.toDouble(),
+                    min: 100,
+                    max: 1000,
+                    divisions: 9,
+                    label: '${_notificationPreferences.proximityRadius} meters',
+                    onChanged: _profile!.notificationsEnabled && _notificationPreferences.proximityAlerts
+                        ? (value) {
+                            setState(() {
+                              _notificationPreferences = _notificationPreferences.copyWith(
+                                proximityRadius: value.toInt(),
+                              );
+                              _hasUnsavedChanges = true;
+                            });
+                          }
+                        : null,
+                  ),
+                  const Divider(),
+                  SwitchListTile(
+                    title: Text(translations.translate('reservation_reminders')),
+                    subtitle: Text(translations.translate('get_reminded_reservations')),
+                    value: _notificationPreferences.reservationReminders,
+                    onChanged: _profile!.notificationsEnabled
+                        ? (value) {
+                            setState(() {
+                              _notificationPreferences = _notificationPreferences.copyWith(
+                                reservationReminders: value,
+                              );
+                              _hasUnsavedChanges = true;
+                            });
+                          }
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: _saveProfile,
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(translations.translate('save_profile')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toggleOption(String option, List<String> list, Function(List<String>) onUpdate) {
+    setState(() {
+      if (list.contains(option)) {
+        list.remove(option);
+      } else {
+        list.add(option);
+      }
+      _hasUnsavedChanges = true;
+      onUpdate(list);
+    });
+  }
+
+  Future<void> _testVacancyNotification() async {
+    try {
+      // First, get a restaurant to send notification about
+      final restaurantRepo = ref.read(RestaurantRepository.provider);
+      final restaurants = await restaurantRepo.getRestaurants().first;
+      
+      if (restaurants.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No restaurants available to test notification'),
+          ),
+        );
+        return;
+      }
+      
+      // Pick a random restaurant to simulate vacancy
+      final restaurant = restaurants[Random().nextInt(restaurants.length)];
+      
+      if (!mounted) return;
+      
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('${restaurant.name} has available seating!'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Restaurant image
+              if (restaurant.imageUrl != null && restaurant.imageUrl!.isNotEmpty)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.network(
+                    restaurant.imageUrl!,
+                    height: 180,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      height: 120,
+                      color: Colors.grey.shade300,
+                      child: const Center(
+                        child: Icon(Icons.restaurant, size: 50),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  height: 120,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Center(
+                    child: Icon(Icons.restaurant, size: 50),
+                  ),
+                ),
+              
+              const SizedBox(height: 16),
+              Text(
+                'Current occupancy: ${restaurant.currentOccupancy}%',
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Wait time: ${restaurant.waitTime} mins',
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Cuisine: ${restaurant.cuisine}',
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Special offer: 10% off for VIP members!',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.blue,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Dismiss'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.pushNamed(context, '/reservations', arguments: restaurant.id);
+              },
+              child: const Text('Reserve Now'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      print('Error showing test notification: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error showing test notification: $e')),
+      );
+    }
+  }
+} 
