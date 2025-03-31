@@ -281,9 +281,9 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
             email: 'info@sushitime.com',
             capacity: 50,
             currentOccupancy: 20,
-            waitTime: 20,
+            waitTime: 30,
             isActive: true,
-            hasVacancy: true,
+            hasVacancy: false,
             imageUrl: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c',
             businessHours: BusinessHours(schedule: {}),
             openingHours: defaultOpeningHours,
@@ -1756,7 +1756,7 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: () => Navigator.pop(context),
             child: const Text('Close'),
           ),
           if (isBelowThreshold)

@@ -5,6 +5,7 @@ import '../../data/repositories/reservation_repository.dart';
 import '../../domain/models/reservation.dart';
 import '../../../../features/restaurant/data/repositories/restaurant_repository.dart';
 import '../../../../features/restaurant/domain/models/restaurant.dart';
+import 'dart:developer' as dev;
 
 class ReservationFormPage extends ConsumerStatefulWidget {
   final Reservation? reservation;
@@ -40,14 +41,41 @@ class _ReservationFormPageState extends ConsumerState<ReservationFormPage> {
       _selectedRestaurantId = widget.reservation!.restaurantId;
       _numberOfGuests = widget.reservation!.numberOfGuests;
       _reservationDate = widget.reservation!.dateTime;
-      _reservationTime = TimeOfDay.fromDateTime(widget.reservation!.dateTime);
+      _reservationTime = TimeOfDay(
+        hour: widget.reservation!.dateTime.hour,
+        minute: widget.reservation!.dateTime.minute
+      );
       _specialRequestsController.text = widget.reservation!.specialRequests;
       _status = widget.reservation!.status;
+      
+      // Set the time display using the actual reservation time
+      _timeController.text = DateFormat('h:mm a').format(widget.reservation!.dateTime);
+    } else {
+      // For new reservations, initialize with current time + 2 hours
+      final initialTime = DateTime.now().add(const Duration(hours: 2));
+      _reservationDate = initialTime;
+      _reservationTime = TimeOfDay(
+        hour: initialTime.hour,
+        minute: initialTime.minute
+      );
     }
     
-    // Set initial values for date and time fields
+    // Set initial values for date field
     _dateController.text = _dateFormat.format(_reservationDate);
-    _timeController.text = _timeFormat.format(_reservationDate);
+    
+    // Only set time field if it hasn't been set by edit mode
+    if (_timeController.text.isEmpty) {
+      final datetime = DateTime(
+        _reservationDate.year,
+        _reservationDate.month,
+        _reservationDate.day,
+        _reservationTime.hour,
+        _reservationTime.minute,
+      );
+      _timeController.text = DateFormat('h:mm a').format(datetime);
+    }
+    
+    dev.log('Initial time set to: ${_timeController.text} (hour: ${_reservationTime.hour})');
   }
 
   @override
@@ -75,35 +103,49 @@ class _ReservationFormPageState extends ConsumerState<ReservationFormPage> {
   }
 
   Future<void> _selectTime() async {
+    dev.log('Opening time picker with current time: ${_reservationTime.hour}:${_reservationTime.minute}');
+    
     final picked = await showTimePicker(
       context: context,
       initialTime: _reservationTime,
+      builder: (BuildContext context, Widget? child) {
+        return MediaQuery(
+          data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: false),
+          child: child!,
+        );
+      },
     );
     
     if (picked != null && picked != _reservationTime) {
       setState(() {
         _reservationTime = picked;
-        // Create a DateTime with the selected time
+        dev.log('New time picked - hour: ${picked.hour}, minute: ${picked.minute}');
+        
+        // Create a DateTime with the selected time for display
         final datetime = DateTime(
           _reservationDate.year,
           _reservationDate.month,
           _reservationDate.day,
-          _reservationTime.hour,
-          _reservationTime.minute,
+          picked.hour,
+          picked.minute,
         );
-        _timeController.text = _timeFormat.format(datetime);
+        _timeController.text = DateFormat('h:mm a').format(datetime);
+        dev.log('Updated time display to: ${_timeController.text}');
       });
     }
   }
 
   DateTime _combineDateTimeFields() {
-    return DateTime(
+    // TimeOfDay.hour already gives us the correct 24-hour format
+    final combined = DateTime(
       _reservationDate.year,
       _reservationDate.month,
       _reservationDate.day,
       _reservationTime.hour,
       _reservationTime.minute,
     );
+    dev.log('Combined datetime: $combined, Hour: ${_reservationTime.hour}');
+    return combined;
   }
 
   Future<void> _submitForm() async {

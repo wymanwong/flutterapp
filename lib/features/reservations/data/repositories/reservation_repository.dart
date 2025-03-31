@@ -64,10 +64,15 @@ class ReservationRepository {
   // Stream of recent reservations (for dashboard)
   Stream<List<Reservation>> getRecentReservations({int limit = 5}) {
     dev.log('Getting recent reservations, limit: $limit');
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    final endOfDay = startOfDay.add(const Duration(days: 1));
+    
     return _firestore
         .collection(reservationsCollection)
+        .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+        .where('dateTime', isLessThan: Timestamp.fromDate(endOfDay))
         .orderBy('dateTime')
-        .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(DateTime.now()))
         .limit(limit)
         .snapshots()
         .map((snapshot) {
@@ -86,7 +91,10 @@ class ReservationRepository {
   Future<int> getReservationsCount() async {
     try {
       dev.log('Getting reservations count');
-      final snapshot = await _firestore.collection(reservationsCollection).count().get();
+      final snapshot = await _firestore
+          .collection(reservationsCollection)
+          .count()
+          .get();
       return snapshot.count ?? 0;
     } catch (e, stackTrace) {
       dev.log('Error getting reservations count: $e', error: e, stackTrace: stackTrace);
@@ -115,13 +123,17 @@ class ReservationRepository {
   Future<String?> createReservation(Reservation reservation) async {
     try {
       dev.log('Creating reservation for restaurant: ${reservation.restaurantId}');
+      dev.log('Reservation dateTime: ${reservation.dateTime}');
+      
       final data = reservation.toMap();
       dev.log('Reservation data: $data');
       
       final docRef = _firestore.collection(reservationsCollection).doc();
-      dev.log('Attempting to save document to: ${docRef.path}');
+      final newReservation = reservation.copyWith(id: docRef.id);
+      final newData = newReservation.toMap();
       
-      await docRef.set(data);
+      dev.log('Attempting to save document to: ${docRef.path}');
+      await docRef.set(newData);
       dev.log('Reservation created with ID: ${docRef.id}');
       return docRef.id;
     } catch (e, stackTrace) {

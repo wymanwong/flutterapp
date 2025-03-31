@@ -35,19 +35,23 @@ class Reservation {
 
   factory Reservation.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
+    final dateTime = (data['dateTime'] as Timestamp).toDate();
+    final createdAt = (data['createdAt'] as Timestamp).toDate();
+    final updatedAt = (data['updatedAt'] as Timestamp).toDate();
+    
     return Reservation(
       id: doc.id,
       restaurantId: data['restaurantId'] ?? '',
       userId: data['userId'] ?? '',
-      dateTime: (data['dateTime'] as Timestamp).toDate(),
+      dateTime: dateTime,
       numberOfGuests: data['numberOfGuests'] ?? 1,
       specialRequests: data['specialRequests'] ?? '',
       status: ReservationStatus.values.firstWhere(
         (e) => e.toString() == data['status'],
         orElse: () => ReservationStatus.pending,
       ),
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
-      updatedAt: (data['updatedAt'] as Timestamp).toDate(),
+      createdAt: createdAt,
+      updatedAt: updatedAt,
       guestInfo: data['guestInfo'],
     );
   }
@@ -67,6 +71,7 @@ class Reservation {
   }
 
   Reservation copyWith({
+    String? id,
     String? restaurantId,
     String? userId,
     DateTime? dateTime,
@@ -76,7 +81,7 @@ class Reservation {
     Map<String, dynamic>? guestInfo,
   }) {
     return Reservation(
-      id: id,
+      id: id ?? this.id,
       restaurantId: restaurantId ?? this.restaurantId,
       userId: userId ?? this.userId,
       dateTime: dateTime ?? this.dateTime,
