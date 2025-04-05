@@ -8,6 +8,8 @@ import 'restaurant_form_page.dart';
 import 'restaurant_detail_page.dart';
 import '../../../dashboard/presentation/pages/dashboard_page.dart';
 import '../../../settings/data/localization/app_localizations.dart';
+import '../../domain/utils/restaurant_utils.dart';
+import '../../../restaurant/domain/utils/restaurant_utils.dart';
 
 final restaurantsProvider = StreamProvider<List<Restaurant>>((ref) {
   final repository = ref.read(restaurantRepositoryProvider);
@@ -366,63 +368,21 @@ class _RestaurantListPageState extends ConsumerState<RestaurantListPage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Icon(Icons.people, size: 16, color: Theme.of(context).hintColor),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${translations.translate('capacity')}: ${restaurant.capacity}',
-                        style: TextStyle(
-                          color: Theme.of(context).hintColor,
-                        ),
-                      ),
-                    ],
+                  Text(
+                    'Capacity: ${restaurant.capacity}',
+                    style: TextStyle(color: Colors.grey.shade600),
                   ),
-                  // Occupancy info - if available
-                  if (restaurant.currentOccupancy != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8.0),
-                      child: Row(
-                        children: [
-                          Icon(Icons.people, size: 16, color: Colors.grey.shade600),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Occupancy: ${restaurant.getOccupancyPercentage().toStringAsFixed(1)}%',
-                            style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontSize: 14,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            '${restaurant.getAvailableSeats()} seats available',
-                            style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
+                  Text(
+                    'Occupancy: ${RestaurantUtils.formatOccupancyPercentage(restaurant)}',
+                    style: TextStyle(color: Colors.grey.shade600),
+                  ),
+                  Text(
+                    RestaurantUtils.getOccupancyStatusText(restaurant),
+                    style: TextStyle(
+                      color: RestaurantUtils.hasVacancy(restaurant) ? Colors.green : Colors.red,
+                      fontWeight: FontWeight.bold,
                     ),
-                    
-                  // Wait time - if available
-                  if (restaurant.waitTime != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4.0),
-                      child: Row(
-                        children: [
-                          Icon(Icons.timer, size: 16, color: Colors.grey.shade600),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Wait: ${restaurant.waitTime} mins',
-                            style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                  ),
                   const SizedBox(height: 16),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,

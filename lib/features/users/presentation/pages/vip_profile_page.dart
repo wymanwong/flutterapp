@@ -15,6 +15,8 @@ import '../../../reservations/domain/models/reservation.dart';
 import 'dart:math';
 import '../../../restaurant/presentation/pages/restaurant_detail_page.dart';
 import 'dart:async';
+import '../../../restaurant/domain/models/business_hours.dart';
+import '../../../restaurant/domain/utils/restaurant_utils.dart';
 
 final vipProfileRepositoryProvider = Provider<VipProfileRepository>((ref) {
   return VipProfileRepository(firestore: FirebaseFirestore.instance);
@@ -247,7 +249,6 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
             currentOccupancy: 30,
             waitTime: 10,
             isActive: true,
-            hasVacancy: true,
             imageUrl: 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0',
             businessHours: BusinessHours(schedule: {}),
             openingHours: defaultOpeningHours,
@@ -265,7 +266,6 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
             currentOccupancy: 25,
             waitTime: 15,
             isActive: true,
-            hasVacancy: true,
             imageUrl: 'https://images.unsplash.com/photo-1525648199074-cee30ba79a4a',
             businessHours: BusinessHours(schedule: {}),
             openingHours: defaultOpeningHours,
@@ -283,7 +283,6 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
             currentOccupancy: 20,
             waitTime: 30,
             isActive: true,
-            hasVacancy: false,
             imageUrl: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c',
             businessHours: BusinessHours(schedule: {}),
             openingHours: defaultOpeningHours,
@@ -631,7 +630,7 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
       itemBuilder: (context, index) {
         final restaurant = restaurants[index];
         return SwipeableRestaurantCard(
-          restaurant: restaurant,
+          restaurantId: restaurant.id,
           isFavorite: _profile!.favoriteRestaurants.contains(restaurant.id),
           onToggleFavorite: () => _toggleFavoriteRestaurant(restaurant),
         );
@@ -933,7 +932,7 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
                               Icon(Icons.people, size: 16, color: Colors.grey.shade600),
                               const SizedBox(width: 4),
                               Text(
-                                'Occupancy: ${restaurant.currentOccupancy}%',
+                                'Occupancy: ${RestaurantUtils.formatOccupancyPercentage(restaurant)}',
                                 style: TextStyle(
                                   color: Colors.grey.shade600,
                                   fontSize: 14,
@@ -1565,96 +1564,126 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
                     style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 16),
+                  // Main Enable Switch - remains the same
                   SwitchListTile(
                     title: const Text('Enable Notifications'),
                     value: _profile!.notificationsEnabled,
                     onChanged: (value) {
                       setState(() {
                         _profile = _profile!.copyWith(notificationsEnabled: value);
+                        // If disabling main notifications, also disable sub-options
+                        if (!value) {
+                          _notificationPreferences = _notificationPreferences.copyWith(
+                            lowOccupancyAlerts: false,
+                            proximityAlerts: false,
+                            reservationReminders: false,
+                          );
+                        }
+                        _hasUnsavedChanges = true; // Mark changes
                       });
                     },
                   ),
                   const Divider(),
-                  SwitchListTile(
-                    title: Text(translations.translate('low_occupancy_alerts')),
-                    subtitle: Text(translations.translate('get_notified_availability')),
-                    value: _notificationPreferences.lowOccupancyAlerts,
-                    onChanged: _profile!.notificationsEnabled
-                        ? (value) {
-                            setState(() {
-                              _notificationPreferences = _notificationPreferences.copyWith(
-                                lowOccupancyAlerts: value,
-                              );
-                              _hasUnsavedChanges = true;
-                            });
-                          }
-                        : null,
-                  ),
-                  Slider(
-                    value: _notificationPreferences.lowOccupancyThreshold.toDouble(),
-                    min: 10,
-                    max: 50,
-                    divisions: 8,
-                    label: '${_notificationPreferences.lowOccupancyThreshold}%',
-                    onChanged: _profile!.notificationsEnabled && _notificationPreferences.lowOccupancyAlerts
-                        ? (value) {
-                            setState(() {
-                              _notificationPreferences = _notificationPreferences.copyWith(
-                                lowOccupancyThreshold: value.toInt(),
-                              );
-                              _hasUnsavedChanges = true;
-                            });
-                          }
-                        : null,
-                  ),
-                  const Divider(),
-                  SwitchListTile(
-                    title: Text(translations.translate('proximity_alerts')),
-                    subtitle: Text(translations.translate('notifications_near_favorites')),
-                    value: _notificationPreferences.proximityAlerts,
-                    onChanged: _profile!.notificationsEnabled
-                        ? (value) {
-                            setState(() {
-                              _notificationPreferences = _notificationPreferences.copyWith(
-                                proximityAlerts: value,
-                              );
-                              _hasUnsavedChanges = true;
-                            });
-                          }
-                        : null,
-                  ),
-                  Slider(
-                    value: _notificationPreferences.proximityRadius.toDouble(),
-                    min: 100,
-                    max: 1000,
-                    divisions: 9,
-                    label: '${_notificationPreferences.proximityRadius} meters',
-                    onChanged: _profile!.notificationsEnabled && _notificationPreferences.proximityAlerts
-                        ? (value) {
-                            setState(() {
-                              _notificationPreferences = _notificationPreferences.copyWith(
-                                proximityRadius: value.toInt(),
-                              );
-                              _hasUnsavedChanges = true;
-                            });
-                          }
-                        : null,
-                  ),
-                  const Divider(),
-                  SwitchListTile(
-                    title: Text(translations.translate('reservation_reminders')),
-                    subtitle: Text(translations.translate('get_reminded_reservations')),
-                    value: _notificationPreferences.reservationReminders,
-                    onChanged: _profile!.notificationsEnabled
-                        ? (value) {
-                            setState(() {
-                              _notificationPreferences = _notificationPreferences.copyWith(
-                                reservationReminders: value,
-                              );
-                              _hasUnsavedChanges = true;
-                            });
-                          }
-                        : null,
+                  // Wrap dependent controls in Opacity and IgnorePointer
+                  IgnorePointer(
+                    ignoring: !_profile!.notificationsEnabled,
+                    child: Opacity(
+                      opacity: _profile!.notificationsEnabled ? 1.0 : 0.5,
+                      child: Column(
+                        children: [
+                          SwitchListTile(
+                            title: Text(translations.translate('low_occupancy_alerts')),
+                            subtitle: Text(translations.translate('get_notified_availability')),
+                            value: _notificationPreferences.lowOccupancyAlerts,
+                            // Keep onChanged conditional, but parent IgnorePointer handles interaction
+                            onChanged: _profile!.notificationsEnabled 
+                                ? (value) {
+                                    setState(() {
+                                      _notificationPreferences = _notificationPreferences.copyWith(
+                                        lowOccupancyAlerts: value,
+                                      );
+                                      _hasUnsavedChanges = true;
+                                    });
+                                  }
+                                : null,
+                          ),
+                          // Only show slider if the sub-switch is also enabled
+                          if (_notificationPreferences.lowOccupancyAlerts)
+                            Slider(
+                              value: _notificationPreferences.lowOccupancyThreshold.toDouble(),
+                              min: 10,
+                              max: 50,
+                              divisions: 8,
+                              label: '${_notificationPreferences.lowOccupancyThreshold}%',
+                              // Keep onChanged conditional
+                              onChanged: _profile!.notificationsEnabled && _notificationPreferences.lowOccupancyAlerts
+                                  ? (value) {
+                                      setState(() {
+                                        _notificationPreferences = _notificationPreferences.copyWith(
+                                          lowOccupancyThreshold: value.toInt(),
+                                        );
+                                        _hasUnsavedChanges = true;
+                                      });
+                                    }
+                                  : null,
+                            ),
+                          const Divider(),
+                          SwitchListTile(
+                            title: Text(translations.translate('proximity_alerts')),
+                            subtitle: Text(translations.translate('notifications_near_favorites')),
+                            value: _notificationPreferences.proximityAlerts,
+                            // Keep onChanged conditional
+                            onChanged: _profile!.notificationsEnabled
+                                ? (value) {
+                                    setState(() {
+                                      _notificationPreferences = _notificationPreferences.copyWith(
+                                        proximityAlerts: value,
+                                      );
+                                      _hasUnsavedChanges = true;
+                                    });
+                                  }
+                                : null,
+                          ),
+                           // Only show slider if the sub-switch is also enabled
+                          if (_notificationPreferences.proximityAlerts)
+                            Slider(
+                              value: _notificationPreferences.proximityRadius.toDouble(),
+                              min: 100,
+                              max: 1000,
+                              divisions: 9,
+                              label: '${_notificationPreferences.proximityRadius} meters',
+                               // Keep onChanged conditional
+                              onChanged: _profile!.notificationsEnabled && _notificationPreferences.proximityAlerts
+                                  ? (value) {
+                                      setState(() {
+                                        _notificationPreferences = _notificationPreferences.copyWith(
+                                          proximityRadius: value.toInt(),
+                                        );
+                                        _hasUnsavedChanges = true;
+                                      });
+                                    }
+                                  : null,
+                            ),
+                          const Divider(),
+                          SwitchListTile(
+                            title: Text(translations.translate('reservation_reminders')),
+                            subtitle: Text(translations.translate('get_reminded_reservations')),
+                            value: _notificationPreferences.reservationReminders,
+                             // Keep onChanged conditional
+                            onChanged: _profile!.notificationsEnabled
+                                ? (value) {
+                                    setState(() {
+                                      _notificationPreferences = _notificationPreferences.copyWith(
+                                        reservationReminders: value,
+                                      );
+                                      _hasUnsavedChanges = true;
+                                    });
+                                  }
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -1689,9 +1718,9 @@ class _VipProfilePageState extends ConsumerState<VipProfilePage> with SingleTick
 
   void _testVacancyNotification() {
     final restaurant = _recommendations['favorites']![0];
-    final occupancyPercentage = restaurant.getOccupancyPercentage();
-    final availableSeats = restaurant.getAvailableSeats();
-    final isBelowThreshold = occupancyPercentage <= _notificationPreferences.lowOccupancyThreshold;
+    final occupancyPercentage = restaurant.occupancyPercentage;
+    final availableSeats = restaurant.capacity - (restaurant.currentOccupancy ?? 0);
+    final isBelowThreshold = occupancyPercentage < 70;
     
     showDialog(
       context: context,

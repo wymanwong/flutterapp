@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/models/restaurant.dart';
 import '../../../settings/data/localization/app_localizations.dart';
 import 'restaurant_form_page.dart';
+import '../../domain/utils/restaurant_utils.dart';
 
 class RestaurantDetailPage extends ConsumerWidget {
   final Restaurant restaurant;
@@ -121,15 +122,21 @@ class RestaurantDetailPage extends ConsumerWidget {
                   const SizedBox(height: 24),
                   
                   _buildSectionTitle('Vacancy Information'),
-                  _buildInfoItem(
-                    Icons.people_alt, 
-                    'Current Occupancy', 
-                    '${restaurant.currentOccupancy} / ${restaurant.capacity} (${restaurant.getOccupancyPercentage().toStringAsFixed(1)}%)'
+                  Text(
+                    'Current Occupancy: ${restaurant.currentOccupancy ?? 0} / ${restaurant.capacity} '
+                    '(${_calculateOccupancyPercentage(restaurant)})',
+                    style: Theme.of(context).textTheme.bodyLarge,
                   ),
-                  _buildInfoItem(
-                    Icons.event_seat,
-                    'Available Seats',
-                    '${restaurant.getAvailableSeats()} seats available'
+                  Text(
+                    'Status: ${RestaurantUtils.getOccupancyStatusText(restaurant)}',
+                    style: TextStyle(
+                      color: RestaurantUtils.hasVacancy(restaurant) ? Colors.green : Colors.red,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    'Available Seats: ${restaurant.capacity - (restaurant.currentOccupancy ?? 0)}',
+                    style: Theme.of(context).textTheme.bodyLarge,
                   ),
                   _buildInfoItem(
                     Icons.timer, 
@@ -156,9 +163,7 @@ class RestaurantDetailPage extends ConsumerWidget {
   }
   
   String _calculateOccupancyPercentage(Restaurant restaurant) {
-    if (restaurant.capacity == 0) return '0';
-    final percentage = (restaurant.currentOccupancy / restaurant.capacity * 100).toStringAsFixed(1);
-    return percentage;
+    return RestaurantUtils.formatOccupancyPercentage(restaurant);
   }
 
   Widget _buildSectionTitle(String title) {

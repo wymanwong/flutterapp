@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
+import 'dart:developer' as dev;
 import '../../../reservations/data/repositories/reservation_repository.dart';
 import '../../../reservations/domain/models/reservation.dart';
 import '../../../restaurant/data/repositories/restaurant_repository.dart';
+import '../../../restaurant/domain/utils/restaurant_utils.dart';
 
 class AnalyticsPage extends ConsumerStatefulWidget {
   const AnalyticsPage({super.key});
@@ -16,9 +18,9 @@ class AnalyticsPage extends ConsumerStatefulWidget {
 class _AnalyticsPageState extends ConsumerState<AnalyticsPage> with SingleTickerProviderStateMixin {
   int _selectedIndex = 4; // Analytics index
   late TabController _tabController;
-  DateTime _startDate = DateTime.now().subtract(const Duration(days: 6));
-  DateTime _endDate = DateTime.now();
-  String _timeframe = 'week';
+  DateTime _startDate = DateTime(2024, 3, 5);
+  DateTime _endDate = DateTime(2024, 4, 5);
+  String _timeframe = 'custom';
   bool _isLoading = false;
   Map<String, int> _dailyReservations = {};
   int _totalReservations = 0;
@@ -105,20 +107,23 @@ class _AnalyticsPageState extends ConsumerState<AnalyticsPage> with SingleTicker
           .read(reservationRepositoryProvider)
           .getReservationsCount();
       
-      // Get restaurant count
+      // Get restaurant count and calculate average occupancy
       final restaurants = await ref
           .read(restaurantRepositoryProvider)
-          .getRestaurantsCount();
+          .getRestaurants()
+          .first;
       
-      // Calculate average occupancy (this would be more complex in a real system)
-      // Here we're just using a placeholder calculation
-      final averageOccupancy = restaurants > 0 ? (totalReservations / restaurants) * 0.25 : 0.0;
+      double totalOccupancy = 0;
+      for (var restaurant in restaurants) {
+        totalOccupancy += RestaurantUtils.calculateOccupancyPercentage(restaurant);
+      }
+      final averageOccupancy = restaurants.isNotEmpty ? totalOccupancy / restaurants.length : 0;
       
       setState(() {
         _dailyReservations = dailyData;
         _totalReservations = totalReservations;
-        _totalRestaurants = restaurants;
-        _averageOccupancy = averageOccupancy;
+        _totalRestaurants = restaurants.length;
+        _averageOccupancy = averageOccupancy / 100; // Convert to decimal for display
         _isLoading = false;
       });
     } catch (e) {
@@ -142,9 +147,11 @@ class _AnalyticsPageState extends ConsumerState<AnalyticsPage> with SingleTicker
       final date = _startDate.add(Duration(days: i));
       final dayKey = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
       final count = _dailyReservations[dayKey] ?? 0;
+      dev.log('Date: $dayKey, Count: $count');
       spots.add(FlSpot(i.toDouble(), count.toDouble()));
     }
     
+    dev.log('Generated spots: $spots');
     return spots;
   }
 

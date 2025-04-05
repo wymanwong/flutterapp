@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/repositories/restaurant_repository.dart';
 import '../../domain/models/restaurant.dart';
+import '../../domain/models/business_hours.dart';
 import '../../../settings/data/localization/app_localizations.dart';
 
 class RestaurantFormPage extends ConsumerStatefulWidget {
@@ -384,23 +385,22 @@ class _RestaurantFormPageState extends ConsumerState<RestaurantFormPage> {
   }
 
   Future<void> _saveRestaurant() async {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isLoading = true;
+    });
 
     try {
-      // Convert business hours to the required format
-      final businessHoursSchedule = <String, DayHours>{};
-
+      final businessHoursSchedule = <String, DaySchedule>{};
       _businessHours.forEach((day, hours) {
-        businessHoursSchedule[day] = DayHours(
+        businessHoursSchedule[day] = DaySchedule(
           isOpen: hours['isOpen'] == 'true',
           openTime: hours['openTime'],
           closeTime: hours['closeTime'],
         );
       });
 
-      // Create opening hours map
       final openingHours = <String, String>{};
       _businessHours.forEach((day, hours) {
         if (hours['isOpen'] == 'true') {
@@ -418,15 +418,14 @@ class _RestaurantFormPageState extends ConsumerState<RestaurantFormPage> {
         phoneNumber: _phoneController.text.trim(),
         email: _emailController.text.trim(),
         capacity: int.tryParse(_capacityController.text.trim()) ?? 0,
-        imageUrl: _imageUrlController.text.trim().isEmpty ? null : _imageUrlController.text.trim(),
+        currentOccupancy: int.tryParse(_currentOccupancyController.text.trim()),
+        waitTime: int.tryParse(_waitTimeController.text.trim()),
         isActive: _isActive,
-        currentOccupancy: int.tryParse(_currentOccupancyController.text.trim()) ?? 0,
-        hasVacancy: _hasVacancy,
-        waitTime: int.tryParse(_waitTimeController.text.trim()) ?? 0,
+        imageUrl: _imageUrlController.text.trim().isEmpty ? null : _imageUrlController.text.trim(),
         businessHours: BusinessHours(schedule: businessHoursSchedule),
+        openingHours: openingHours,
         createdAt: widget.restaurant?.createdAt ?? DateTime.now(),
         updatedAt: DateTime.now(),
-        openingHours: openingHours,
       );
 
       final repository = ref.read(restaurantRepositoryProvider);
@@ -452,6 +451,10 @@ class _RestaurantFormPageState extends ConsumerState<RestaurantFormPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e')),
       );
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 } 

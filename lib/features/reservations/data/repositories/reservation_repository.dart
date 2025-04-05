@@ -194,11 +194,15 @@ class ReservationRepository {
   // Get daily reservations count for analytics
   Future<Map<String, int>> getDailyReservationsCount(DateTime startDate, DateTime endDate) async {
     try {
-      dev.log('Getting daily reservations count from $startDate to $endDate');
+      // Ensure we include the full day for both start and end dates
+      final adjustedStartDate = DateTime(startDate.year, startDate.month, startDate.day, 0, 0, 0);
+      final adjustedEndDate = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59);
+      
+      dev.log('Getting daily reservations count from $adjustedStartDate to $adjustedEndDate');
       final snapshot = await _firestore
           .collection(reservationsCollection)
-          .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
-          .where('dateTime', isLessThanOrEqualTo: Timestamp.fromDate(endDate))
+          .where('dateTime', isGreaterThanOrEqualTo: Timestamp.fromDate(adjustedStartDate))
+          .where('dateTime', isLessThanOrEqualTo: Timestamp.fromDate(adjustedEndDate))
           .get();
 
       final Map<String, int> dailyCounts = {};

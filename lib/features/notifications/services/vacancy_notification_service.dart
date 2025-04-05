@@ -3,10 +3,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../restaurant/domain/models/restaurant.dart';
+import '../../restaurant/domain/utils/restaurant_utils.dart';
 import '../../restaurant/data/repositories/restaurant_repository.dart';
 import '../../users/domain/models/vip_profile.dart';
 import '../../users/data/repositories/vip_profile_repository.dart';
 import 'firebase_messaging_service.dart';
+import '../models/vacancy_notification.dart';
+import '../repositories/notification_repository.dart';
 
 // Remove the import from main.dart
 // import '../../../main.dart';
@@ -16,10 +19,12 @@ final vacancyNotificationServiceProvider = Provider<VacancyNotificationService>(
   final restaurantRepository = ref.read(RestaurantRepository.provider);
   final vipProfileRepository = ref.read(VipProfileRepository.provider);
   final firebaseMessagingService = ref.read(firebaseMessagingServiceProvider);
+  final notificationRepository = ref.read(NotificationRepository.provider);
   return VacancyNotificationService(
     restaurantRepository: restaurantRepository,
     vipProfileRepository: vipProfileRepository,
     messagingService: firebaseMessagingService,
+    notificationRepository: notificationRepository,
   );
 });
 
@@ -27,11 +32,14 @@ class VacancyNotificationService {
   final RestaurantRepository restaurantRepository;
   final VipProfileRepository vipProfileRepository;
   final FirebaseMessagingService messagingService;
+  final NotificationRepository notificationRepository;
+  final Set<String> _notifiedRestaurants = {};
 
   VacancyNotificationService({
     required this.restaurantRepository,
     required this.vipProfileRepository,
     required this.messagingService,
+    required this.notificationRepository,
   });
 
   // Check for low occupancy restaurants and notify users who have low occupancy alerts enabled
@@ -45,11 +53,8 @@ class VacancyNotificationService {
       final lowOccupancyRestaurants = restaurants.where((restaurant) {
         if (!restaurant.isActive) return false;
         
-        final occupancyRate = restaurant.capacity > 0 
-            ? (restaurant.currentOccupancy / restaurant.capacity) * 100 
-            : 0;
-            
-        return occupancyRate < 50 && restaurant.hasVacancy;
+        final occupancyRate = RestaurantUtils.calculateOccupancyPercentage(restaurant);
+        return occupancyRate < 50 && RestaurantUtils.hasVacancy(restaurant);
       }).toList();
       
       if (lowOccupancyRestaurants.isEmpty) {
@@ -81,7 +86,7 @@ class VacancyNotificationService {
         
         // Send notification for each relevant restaurant
         for (final restaurant in relevantRestaurants) {
-          await _sendVacancyNotification(user, restaurant);
+          await checkRestaurantOccupancy(restaurant);
         }
       }
       
@@ -103,7 +108,7 @@ class VacancyNotificationService {
         return;
       }
       
-      await _sendVacancyNotification(userProfile, restaurant);
+      await _sendVacancyNotification(restaurant, RestaurantUtils.calculateOccupancyPercentage(restaurant));
       
     } catch (e) {
       debugPrint('Error sending test vacancy notification: $e');
@@ -111,44 +116,16 @@ class VacancyNotificationService {
   }
   
   // Send a notification about a restaurant vacancy
-  Future<void> _sendVacancyNotification(VipProfile user, Restaurant restaurant) async {
+  Future<void> _sendVacancyNotification(Restaurant restaurant, double occupancyPercentage) async {
     try {
-      // Get the user's FCM token from preferences (in a real app)
-      // For this demo, we'll use a direct notification method
-      
-      final occupancyRate = restaurant.capacity > 0 
-          ? (restaurant.currentOccupancy / restaurant.capacity) * 100 
-          : 0;
-          
-      final notificationData = {
-        'title': '${restaurant.name} has available seating!',
-        'body': 'Current occupancy is ${occupancyRate.toStringAsFixed(0)}%. Wait time: ${restaurant.waitTime} mins.',
-        'data': {
-          'restaurantId': restaurant.id,
-          'restaurantName': restaurant.name,
-          'type': 'vacancy',
-          'occupancy': occupancyRate.toString(),
-          'waitTime': restaurant.waitTime.toString(),
-        }
-      };
-      
-      // In a real app, we'd use FCM to send this to the user's device
-      // Firebase.messaging.send(...) 
-      
-      // For this demo, we'll just log it
-      debugPrint('Sending notification to user ${user.userId}: ${notificationData['title']}');
-      
-      // Save the notification to Firestore for demo purposes
-      await FirebaseFirestore.instance.collection('notifications').add({
-        'userId': user.userId,
-        'restaurantId': restaurant.id,
-        'title': notificationData['title'],
-        'body': notificationData['body'],
-        'data': notificationData['data'],
-        'read': false,
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-      
+      final notification = VacancyNotification(
+        restaurantId: restaurant.id,
+        restaurantName: restaurant.name,
+        occupancyPercentage: occupancyPercentage,
+        timestamp: DateTime.now(),
+      );
+
+      await notificationRepository.addNotification(notification);
     } catch (e) {
       debugPrint('Error sending vacancy notification: $e');
     }
@@ -170,5 +147,19 @@ class VacancyNotificationService {
     }
     
     return restaurants;
+  }
+
+  Future<void> checkRestaurantOccupancy(Restaurant restaurant) async {
+    try {
+      final occupancyPercentage = RestaurantUtils.calculateOccupancyPercentage(restaurant);
+      final isBelowThreshold = occupancyPercentage <= 50;
+
+      if (isBelowThreshold && !_notifiedRestaurants.contains(restaurant.id)) {
+        await _sendVacancyNotification(restaurant, occupancyPercentage);
+        _notifiedRestaurants.add(restaurant.id);
+      }
+    } catch (e) {
+      debugPrint('Error checking restaurant occupancy: $e');
+    }
   }
 } 
